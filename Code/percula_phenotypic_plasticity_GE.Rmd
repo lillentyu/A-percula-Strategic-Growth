@@ -1,0 +1,678 @@
+---
+title: "Phenotypic_Plasticity_gene_expression"
+author: "Vizer Lili"
+date: "2023-07-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load packages, include=FALSE}
+
+library(tidyverse)
+library(dplyr)
+library(arrayQualityMetrics) # need special install above
+library(ggplot2)
+library(readr)
+library(plotly)
+library(DESeq2) # need special install above
+library(vegan)
+library(data.table)
+library(ggpubr)
+library(pdftools)
+library(ggrepel)
+library(adegenet)
+library(ggvenn)
+library(flashClust)
+library(WGCNA)
+library(gridExtra)
+###conduct array quality metrics to detect and remove outliers
+#library(affycoretools)
+library(genefilter)
+library(Biobase)
+library(gridExtra)
+
+source("CustomFunctions.R")
+
+#color scheme throughout
+#write out color-scheme
+color_scheme <- c("#abd9e9", "#2c7bb6", "darkblue", "#fdae61", "darkorange",  "#d7191c", "pink1", "magenta", "purple") 
+
+col_vector<-c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', "green3", '#000000', "#abd9e9",  "#d7191c", "#2c7bb6","maroon", "green", "yellow", "coral" , "gray85")
+```
+
+
+## Expoloring data {.tabset}
+
+```{r}
+# read in the counts file
+counts <- read.table("../Data/nemo_featurecounts_24July2023_.txt", header = TRUE, row.names = 1)
+counts <- counts[c(-1:-5)] # removing columns 1-5 since we do not need them for this
+head(counts)
+col_names <- colnames(counts)
+
+# Remove some of the extra stuff in the column names to match with expDesign
+col_names <- gsub("X", "", col_names)
+col_names <- gsub("\\.*", "", col_names)
+colnames(counts) <- col_names
+head(counts)
+
+#Need to re-arrange count data so the first columns are S, followed by P1 and P2 - S will be used as control here
+reorder_dataframe <- function(counts, custom_order) {
+  col_order <- order(match(sub("[0-9]+([A-Za-z])", "\\1", colnames(counts)), custom_order))
+  df_reordered <- counts[, col_order, drop = FALSE]  # Use drop = FALSE to keep as a dataframe
+  return(df_reordered)
+}
+
+# Specify the custom order you want
+desired_order <- c("S", "P1", "P2")
+
+# Reorder the dataframe
+counts <- reorder_dataframe(counts, desired_order)
+
+#Write clean counts file (eg.: pathway-analysis)
+head(counts)
+#write.table(counts, file = "../Data/nemo_cleaned_count_data.txt", sep = "\t", row.names = TRUE, col.names = TRUE)
+
+# read in the experimental design .csv
+expDesign <- read.csv("../Data/Strategic_Growth_Exp_Design.csv")
+head(expDesign)
+expDesign$fish_type2 <- factor(expDesign$fish_type2)
+expDesign$fish_type <- factor(expDesign$fish_type)
+expDesign$clutch_ID <- factor(expDesign$clutch_ID)
+expDesign$Sample_ID <- factor(expDesign$Sample_ID)
+
+table(expDesign$fish_type2, expDesign$clutch_ID)
+```
+
+```{r, raw counts}
+totalCounts=colSums(counts)
+totalCounts
+barplot((totalCounts), ylab="raw counts", las=2, cex.names=0.5, cex.axis = 0.8)
+```
+
+<br/>
+
+## conduct array quality metrics to detect and remove outliers {.tabset}
+
+```{r array of quality metrics to detect and remove outliers}
+
+## create the DESeq object
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = expDesign,
+                              design = ~ clutch_ID + fish_type2)
+
+vsd.ge=assay(vst(dds))
+rl=vst(dds)
+#e=ExpressionSet(assay(rl), AnnotatedDataFrame(as.data.frame(colData(rl))))
+#arrayQualityMetrics(e,outdir=v,intgroup=c("clutch_ID", "fish_type2"),force=T)
+```
+
+
+
+<br/>
+
+### Filtering counts
+
+```{r unfiltered size factor plots, fig.width = 10, fig.height = 4}
+
+nrow <- nrow(counts) # number of rows/counts (24840)
+countMat <- DESeqDataSetFromMatrix(counts, expDesign, ~ clutch_ID + fish_type2) # makes a DESeqDataSet object with count data, experimental design, and formula: ~ clutch_ID + fish_type2
+counts_SF <- estimateSizeFactors(countMat) #  estimates the size factors using the "median ratio method" described by Equation 5 in Anders and Huber (2010)
+
+# make dataframe of the size factors to visualize
+sizeFactors <- data.frame(sample = counts_SF@colData@listData[["Sample_ID"]], treat = counts_SF@colData@listData[["fish_type2"]], sizeFactors = counts_SF@colData@listData[["sizeFactor"]])
+
+# plot sizeFactors
+ggplot(data = sizeFactors, aes(x = sample, y = sizeFactors, fill = treat)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  #scale_fill_brewer(palette = 2, type = "qual") +
+  geom_bar(stat = "identity") +
+  ggtitle("Unfiltered sizeFactors")
+```
+
+Figure 1: Size factors of initial clownfish samples in the study, calculated using *A. percula* gene count data.
+
+After viewing size factors, it appears that no samples need to be removed do to low values.
+
+</br>
+
+
+```{r filter low reads (base mean 3)}
+
+### Filtered counts and remove outliers (less than 10)
+
+## remove rows with no or low counts (remove ones with base mean 10 or lower)
+keep <- rowSums(counts(counts_SF)) >= 10 
+counts_filter <- counts[keep,]
+nrow_filter <- nrow(counts_filter)
+nrow_filter
+# the updated number of rows (20537)  #with the above change of 10 this is 18829
+filter_counts_out <- counts_filter[]
+
+```
+
+
+```{r filtered size factor plots, fig.width = 10, fig.height = 4}
+
+## Redo the count matrix steps from above with the filtered data
+filt_countMat <- DESeqDataSetFromMatrix(filter_counts_out, expDesign, ~ clutch_ID + fish_type2) # makes a DESeqDataSet object with count data, experimental design, and design formula of ~fishtype_2 + clutch_ID
+
+counts_SF_filter <- estimateSizeFactors(filt_countMat) #  estimates the size factors using the "median ratio method" described by Equation 5 in Anders and Huber (2010)
+
+
+# make dataframe of the size factors to visualize
+sizeFactors_filter <-  data.frame(sample = counts_SF_filter@colData@listData[["Sample_ID"]], treat = counts_SF_filter@colData@listData[["fish_type2"]], sizeFactors = counts_SF_filter@colData@listData[["sizeFactor"]])
+
+# plot sizeFactors
+ggplot(data = sizeFactors_filter, aes(x = sample, y = sizeFactors, fill = treat)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Filtered sizeFactors")
+
+```
+Figure 2: Size factors of clownfish samples after filtering low reads out.
+
+Without filtering low reads, we had a total of **`r nrow`** counts. After filtering out the low counts (those with a base mean less than 3), we now have **`r  nrow_filter`** counts remaining for all *A. percula* samples.
+
+
+
+```{r dds model and save, eval = FALSE, echo = TRUE}
+
+# going to use the filter_counts_out object created above because it is filtered for low reads 
+## create the DESeq object
+dds <- DESeqDataSetFromMatrix(countData = filter_counts_out,
+                              colData = expDesign,
+                              design = ~ clutch_ID + fish_type2)
+dds <- DESeq(dds) # differential expression analysis on gamma-poisson distribution
+vsd <- varianceStabilizingTransformation(dds, blind = TRUE) # quickly estimate dispersion trend and apply a variance stabilizing transformation
+
+## saving the rlog for DEG heatmap
+rlog <- DESeq2::rlog(dds, blind = TRUE) #for use later on
+
+## Save dds and vsd data 
+save(dds, vsd, rlog, file = "./transformed_counts_mindepth10.RData")
+
+#Look at dispersions plot
+plotDispEsts(dds, main="Dispersion plot")
+
+```
+
+
+```{r normalized count table}
+## Load previously saved dds, vsd, and rlog data 
+load("transformed_counts_mindepth10.RData")
+
+## Normalize counts for table
+dds <- estimateSizeFactors(dds)
+norm_counts <- counts(dds, normalized = TRUE)
+
+```
+
+### PCA plots of Global Gene Expression 
+
+```{r}
+## PCA plot using DESeq2 package of all genes vs vegan package
+## Principal Component Analysis
+PCAdata_all <- plotPCA(vsd, intgroup=c("clutch_ID", "fish_type2"), ntop=NULL, returnData=TRUE)
+percentVar_all <- round(100 * attr(PCAdata_all, "percentVar"))
+PCAdata_all
+
+## Making plot - DESeq2 pca
+color_scheme <- c("magenta3","purple3","grey50")
+pca_plot_all <- ggplot(PCAdata_all, aes(x = PC1, y = PC2, color = fish_type2)) +
+  geom_point(size = 4, aes(fill = fish_type2, shape=clutch_ID), alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(colour = fish_type2, fill = fish_type2), fill = NA, type = "t", level = 0.95, alpha = 0.2, show.legend = FALSE) +
+#  geom_text(aes(label = name), vjust = -0.5, hjust = 0.5, size = 2, color = "black") +  # Add this line to include sample names as labels+
+  xlab(paste0("PC1 (", percentVar_all[1], "%)")) +
+  scale_fill_manual(name = "Treatment", values=color_scheme) +
+  scale_color_manual(name = "Treatment", values=color_scheme) +
+  ylab(paste0("PC2 (", percentVar_all[2], "%)")) +
+  ggtitle("All genes") +
+  theme_classic()
+pca_plot_all
+
+```
+
+
+```{r}
+## PCA using prcomp from vegan package
+## Extract variance-stabilized data from DESeq2
+pca_data_all <- assay(vsd)  # or use rlog(dds) if preferred
+
+# Transpose for PCA (samples as rows, genes as columns)
+pca_res <- prcomp(t(pca_data_all), center = TRUE, scale. = FALSE)
+
+# Create a data frame with PCA results
+pca_df <- as.data.frame(pca_res$x)
+pca_df$fish_type2 <- colData(vsd)$fish_type2
+pca_df$clutch_ID <- colData(vsd)$clutch_ID
+
+# Compute variance explained by each PC
+percentVar <- round(100 * pca_res$sdev^2 / sum(pca_res$sdev^2), 1)
+
+color_scheme <- c("magenta3", "purple3", "grey50")
+
+## Plot PCA (PCA1 vs PCA2)
+ggplot(pca_df, aes(x = PC1, y = PC2, color = fish_type2)) +
+  geom_point(size = 4, aes(shape = clutch_ID), alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(colour = fish_type2), 
+               fill = NA, type = "t", level = 0.95, alpha = 0.2, show.legend = FALSE) +
+  xlab(paste0("PC1 (", percentVar[1], "%)")) +
+  ylab(paste0("PC2 (", percentVar[2], "%)")) +
+  scale_color_manual(name = "social position", values = color_scheme) +
+  ggtitle("PCA (PC1 vs PC2) all genes prcomp") +
+  theme_classic()
+
+#ggsave("../Figures/PCA_PC1_vs_PC2_all_genes_prcomp.png", width = 10, height = 8, dpi = 1200)
+
+color_scheme <- c("magenta3", "purple3", "grey50")
+shapes <- c(15,  16,  17)
+
+# Plot PCA (PC2 vs PC3)
+pca_plot <- ggplot(pca_df, aes(x = PC2, y = PC3, color = fish_type2)) +
+  geom_point(size = 5, aes(shape = clutch_ID), alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(colour = fish_type2), 
+               fill = NA, type = "t", level = 0.95, alpha = 0.2, size= 2, 
+               show.legend = FALSE) +
+  xlab(paste0("PC2 (", percentVar[2], "%)")) +
+  ylab(paste0("PC3 (", percentVar[3], "%)")) +
+  scale_color_manual(name = "social position", values = color_scheme) +
+  scale_shape_manual(name = "clutch ID", values = shapes) +  # Specify shape values
+  #ggtitle("PCA (PC2 vs PC3) all genes prcomp") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 16),         legend.title=element_text(size=13),  legend.text=element_text(size=13), legend.position = c(0.09,0.18))
+#ggsave("../Figures/PCA_PC2_vs_PC3_all_genes_prcomp.png", width = 10, height = 8, dpi = 1200)
+
+# Plot PCA (PC2 vs PC3) - manuscript version
+pca_plot <- ggplot(pca_df, aes(x = PC2, y = PC3, color = fish_type2)) +
+  geom_point(size = 5, alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(colour = fish_type2), 
+               fill = NA, type = "t", level = 0.95, alpha = 0.2, size= 2, 
+               show.legend = FALSE) +
+  xlab(paste0("PC2 (", percentVar[2], "%)")) +
+  ylab(paste0("PC3 (", percentVar[3], "%)")) +
+  scale_color_manual(name = "social position", values = color_scheme) +
+  scale_shape_manual(name = "clutch ID", values = shapes) +  # Specify shape values
+  #ggtitle("PCA (PC2 vs PC3) all genes prcomp") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 16),         legend.title=element_text(size=13),  legend.text=element_text(size=13), legend.position = c(0.09,0.18))
+#ggsave("../Figures/PCA_PC2_vs_PC3_all_genes_prcomp.png", width = 10, height = 8, dpi = 1200)
+
+
+
+## PERMANOVA test on PCA 1 and PCA 2
+pca_matrix_pc1_pc2 <- pca_df[, c("PC1", "PC2")]
+adonis_res_pc1_pc2 <- adonis2(pca_matrix_pc1_pc2 ~ fish_type2 + clutch_ID, data = pca_df, method = "euclidean", permutations = 999)
+print(adonis_res_pc1_pc2)
+
+#Permutation test for adonis under reduced model
+#Terms added sequentially (first to last)
+#Permutation: free
+#Number of permutations: 999
+
+#adonis2(formula = pca_matrix_pc1_pc2 ~ fish_type2 + clutch_ID, data = pca_df, permutations = 999, method = "euclidean")
+#           Df SumOfSqs      R2      F Pr(>F)   
+#fish_type2  2   4305.4 0.15859 4.1744  0.004 **
+#clutch_ID   2   2214.1 0.08156 2.1467  0.083 . 
+#Residual   40  20627.8 0.75985                 
+#Total      44  27147.2 1.00000                 
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+
+## PERMANOVA on PCA 2 and PCA 3 
+# Extract PC2 and PC3 for PERMANOVA
+pca_matrix <- pca_df[, c("PC2", "PC3")]
+# Run adonis PERMANOVA with fish_type2 as grouping variable
+adonis_res <- adonis2(pca_matrix ~ fish_type2 + clutch_ID, data = pca_df, method = "euclidean", permutations = 999)
+print(adonis_res)
+
+#Permutation test for adonis under reduced model
+#Terms added sequentially (first to last)
+#Permutation: free
+#Number of permutations: 999
+
+#adonis2(formula = pca_matrix ~ fish_type2 + clutch_ID, data = pca_df, permutations = 999, method = "euclidean")
+#           Df SumOfSqs      R2      F Pr(>F)   
+#fish_type2  2   3531.9 0.21476 5.8911  0.003 **
+#clutch_ID   2    923.0 0.05613 1.5395  0.187   
+#Residual   40  11990.6 0.72911                 
+#Total      44  16445.5 1.00000                 
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+```
+
+
+
+
+```{r}
+### PCA plot using DESeq2 package of ntop 500 genes
+### ntop = 500 is the top 500 genes with the highest variance across samples
+
+PCAdata_500 <- plotPCA(vsd, intgroup=c("clutch_ID", "fish_type2"), ntop=500, returnData=TRUE)
+percentVar_500 <- round(100 * attr(PCAdata_500, "percentVar"))
+PCAdata_500
+
+pca_plot_500 <- ggplot(PCAdata_500, aes(x = PC1, y = PC2, color = fish_type2)) +
+  geom_point(size = 3, aes(fill = fish_type2, shape=clutch_ID), alpha = 0.8) +
+  stat_ellipse(geom = "polygon", aes(colour = fish_type2, fill = fish_type2), fill = NA, type = "t", level = 0.95, alpha = 0.2, show.legend = FALSE) +
+  #geom_text(aes(label = name), vjust = -0.5, hjust = 0.5, size = 2, color = "black") +  # Add this line to include sample names as labels+
+  xlab(paste0("PC1 (", percentVar_500[1], "%)")) +
+  scale_fill_manual(name = "Treatment", values=color_scheme) +
+  scale_color_manual(name = "Treatment", values=color_scheme) +
+  ylab(paste0("PC2 (", percentVar_500[2], "%)")) +
+  ggtitle("Top 500 genes") +
+  theme_classic()
+pca_plot_500
+
+```
+
+
+## Differential gene expression {.tabset}
+
+<br/>
+
+### DEGs 
+
+```{r general results of DEGs}
+#Look at results extracts as a table from a DESeq analysis giving base means across samples, log2 fold changes, standard errors, test statistics, p-values and adjusted p-values; resultsNames returns the names of the estimated effects (coefficents) of the model
+resultsNames(dds)
+
+## Fist, we will look at the general 'results()' function
+results(dds)
+summary(results(dds))
+```
+
+
+
+```{r create results of DEGs by contrasts}
+## When specifying your contrasts, make sure you 'control' level is the second value input and your 'treatment' is the first
+P1_con_P2 <- results(dds, contrast = c("fish_type2", "P2", "P1"), alpha = 0.05)
+P1_con_S <- results(dds, contrast = c("fish_type2", "S", "P1"), alpha = 0.05)
+P2_con_S <- results(dds, contrast = c("fish_type2", "S", "P2"), alpha = 0.05)
+
+
+#Contrasting clutches
+L2_con_L3 <- results(dds, contrast = c("clutch_ID", "L2", "L3"), alpha = 0.05)
+L2_con_L6 <- results(dds, contrast = c("clutch_ID", "L2", "L6"), alpha = 0.05)
+L3_con_L6 <- results(dds, contrast = c("clutch_ID", "L3", "L6"), alpha = 0.05)
+
+```
+
+```{r results summary, echo = TRUE}
+
+summary(P1_con_P2) #  P1 individuals compared to P2
+summary(P1_con_S) # P1 individuals compared to S
+summary(P2_con_S) # P2 individuals comapred to S
+
+
+summary(L2_con_L3)  #L2 indiviuals compared to L3 clutch
+summary(L2_con_L6)  #L2 indiviuals compared to L6 clutch
+summary(L3_con_L6)  #L3 indiviuals compared to L6 clutch
+
+```
+
+
+```{r filter for DEGs by treatment}
+
+## Filter for DEG per pairwise comparison (adjusted p value = 0.05)
+# P1 v P2
+downCon_P1P2 <- row.names(P1_con_P2[P1_con_P2$padj < 0.05 & !is.na(P1_con_P2$padj) & P1_con_P2$log2FoldChange < 0, ])
+upCon_P1P2 <- row.names(P1_con_P2[P1_con_P2$padj < 0.05 & !is.na(P1_con_P2$padj) & P1_con_P2$log2FoldChange > 0, ])
+allCon_P1P2 <- row.names(P1_con_P2[P1_con_P2$padj < 0.05 & !is.na(P1_con_P2$padj), ])
+
+# P1 vs S
+downCon_P1S <- row.names(P1_con_S[P1_con_S$padj < 0.05 & !is.na(P1_con_S$padj) & P1_con_S$log2FoldChange < 0, ])
+upCon_P1S <- row.names(P1_con_S[P1_con_S$padj < 0.05 & !is.na(P1_con_S$padj) & P1_con_S$log2FoldChange > 0, ])
+allCon_P1S <- row.names(P1_con_S[P1_con_S$padj < 0.05 & !is.na(P1_con_S$padj), ])
+
+# P2 vs S
+downCon_P2S <- row.names(P2_con_S[P2_con_S$padj < 0.05 & !is.na(P2_con_S$padj) & P2_con_S$log2FoldChange < 0, ])
+upCon_P2S <- row.names(P2_con_S[P2_con_S$padj < 0.05 & !is.na(P2_con_S$padj) & P2_con_S$log2FoldChange > 0, ])
+allCon_P2S <- row.names(P2_con_S[P2_con_S$padj < 0.05 & !is.na(P2_con_S$padj), ]) 
+
+
+## Compile DEG dataframe
+DEG_bar <- data.frame("fish_type" = c(toString(unlist(str_split(P1_con_P2@elementMetadata@listData[["description"]][2], " "))[c(8,6)]), toString(unlist(str_split(P1_con_S@elementMetadata@listData[["description"]][2], " "))[c(8,6)]), toString(unlist(str_split(P2_con_S@elementMetadata@listData[["description"]][2], " "))[c(8,6)])), 
+                "up" = c(length(upCon_P1P2), length(upCon_P1S), length(upCon_P2S)), 
+                "down" = c((length(downCon_P1P2) * -1), (length(downCon_P1S) * -1), (length(downCon_P2S) * -1)))
+
+
+DEG_bar <- gather(DEG_bar, reg, genes, up:down)
+DEG_bar
+```
+
+
+```{r filter for DEGs by clutch}
+#Doing the same for clutches
+
+## Filter for DEG per pairwise comparison (adjusted p value = 0.05)
+# L2 vs L3
+downCon_L2L3 <- row.names(L2_con_L3[L2_con_L3$padj < 0.05 & !is.na(L2_con_L3$padj) & L2_con_L3$log2FoldChange < 0, ])
+upCon_L2L3 <- row.names(L2_con_L3[L2_con_L3$padj < 0.05 & !is.na(L2_con_L3$padj) & L2_con_L3$log2FoldChange > 0, ])
+allCon_L2L3 <- row.names(L2_con_L3[L2_con_L3$padj < 0.05 & !is.na(L2_con_L3$padj), ])
+
+# L2 vs L6
+downCon_L2L6 <- row.names(L2_con_L6[L2_con_L6$padj < 0.05 & !is.na(L2_con_L6$padj) & L2_con_L6$log2FoldChange < 0, ])
+upCon_L2L6 <- row.names(L2_con_L6[L2_con_L6$padj < 0.05 & !is.na(L2_con_L6$padj) & L2_con_L6$log2FoldChange > 0, ])
+allCon_L2L6 <- row.names(L2_con_L6[L2_con_L6$padj < 0.05 & !is.na(L2_con_L6$padj), ])
+
+# L3 vs L6
+downCon_L3L6 <- row.names(L3_con_L6[L3_con_L6$padj < 0.05 & !is.na(L3_con_L6$padj) & L3_con_L6$log2FoldChange < 0, ])
+upCon_L3L6 <- row.names(L2_con_L6[L2_con_L6$padj < 0.05 & !is.na(L2_con_L6$padj) & L2_con_L6$log2FoldChange > 0, ])
+allCon_L3L6 <- row.names(L3_con_L6[L3_con_L6$padj < 0.05 & !is.na(L3_con_L6$padj), ]) 
+
+
+## Compile DEG dataframe
+DEG_bar_clutches <- data.frame("clutch_ID" = c(toString(unlist(str_split(L2_con_L3@elementMetadata@listData[["description"]][2], " "))[c(8,6)]), toString(unlist(str_split(L2_con_L6@elementMetadata@listData[["description"]][2], " "))[c(8,6)]), toString(unlist(str_split(L3_con_L6@elementMetadata@listData[["description"]][2], " "))[c(8,6)])), 
+                "up" = c(length(upCon_L2L3), length(upCon_L2L6), length(upCon_L3L6)), 
+                "down" = c((length(downCon_L2L3) * -1), (length(downCon_L2L6) * -1), (length(downCon_L3L6) * -1)))
+
+
+DEG_bar_clutches <- gather(DEG_bar_clutches, reg, genes, up:down)
+DEG_bar_clutches
+```
+
+
+
+
+
+```{r DEG plot}
+
+## Plot bar graph of DEG by treatment
+
+ggplot(data = DEG_bar, aes(x = fish_type, y = genes, fill = reg)) +
+  theme_classic() +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("#2c7bb6", "#d7191c")) +
+  geom_hline(yintercept = 0, linetype = "dashed", size=0.5) + 
+  ylab("Sig DEGs by treatment") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  xlab ("")
+
+## Plot bar graph of DEG by clutch
+
+ggplot(data = DEG_bar_clutches, aes(x = clutch_ID, y = genes, fill = reg)) +
+  theme_classic() +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values = c("#2c7bb6", "#d7191c")) +
+  geom_hline(yintercept = 0, linetype = "dashed", size=0.5) + 
+  ylab("Sig DEGs by clutch") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
+  xlab ("")
+
+```
+
+
+Figure: Bar plot of significant DEGs. The y axis denotes how many genes there are, with positive values being up-regulated genes, and negative values denoting down-regulated genes. 
+
+
+<br/>
+
+### Paired Venns of DEGs
+
+
+```{r paired Venns, eval=FALSE, include=FALSE}
+
+## Comparing up between all three: up regulation
+venn_loci_up <- list("P1 vs P2" = upCon_P1P2, "P1 vs S" = upCon_P1S, "P2 vs S" = upCon_P2S)
+
+## Comparing up between all three: down regulation
+venn_loci_down <- list("P1 vs P2" = downCon_P1P2, "P1 vs S" = downCon_P1S, "P2 vs S" = downCon_P2S)
+
+## Comparing between all three
+venn_all <- list("P1 vs P2" = allCon_P1P2, "P1 vs S" = allCon_P1S, "P2 vs S" = allCon_P2S)
+
+ven_all_up <- ggvenn(venn_loci_up, 
+       show_percentage=FALSE,
+       fill_color = c("darkorange", "coral", "#C8322F"), fill_alpha = 0.3,
+       stroke_size = 0.4, text_size = 3, text_color = "#25292B",
+       set_name_color = "#25292B", set_name_size = 2
+       )
+ven_all_up
+ggsave( "../Figures/All_PairWise_Vens_UP.png", width = 4, height = 4)
+
+ven_all_down <- ggvenn(venn_loci_down, 
+       show_percentage=FALSE,
+       fill_color = c("cyan4", "cornflowerblue", "blue"), fill_alpha = 0.3,
+       stroke_size = 0.4, text_size = 3, text_color = "#25292B",
+       set_name_color = "#25292B", set_name_size = 2
+       )
+ven_all_down       
+#ggsave("../Figures/All_PairWise_Vens_DOWN.png", width = 4, height = 4)      
+
+
+
+```
+
+Figure 4: Venn diagrams depicting number of shared significantly up-regulated / down-regulated genes. Orange venn diagrams depict up-regulated genes, while blue depicts down-regulated genes. 
+
+
+## Heatmaps {.tabset}
+
+
+```{r heatmap of all annotated genes P1 vs P2 vs S}
+## Load previously saved dds, vsd, and rlog data 
+load("transformed_counts_mindepth10.RData.RData")
+
+#the three pairwise contrasts:
+P1_con_P2 <- results(dds, contrast = c("fish_type2", "P2", "P1"), alpha = 0.05)
+nrow(P1_con_P2[P1_con_P2$padj<0.05 & !is.na(P1_con_P2$padj),])  # Num significantly differentially expressed genes excluding the no/low count genes   #133
+plotMA(P1_con_P2, main="P1 vs P2")
+
+P1_con_S <- results(dds, contrast = c("fish_type2", "S", "P1"), alpha = 0.05)
+nrow(P1_con_S[P1_con_S$padj<0.05 & !is.na(P1_con_S$padj),])  # Num significantly differentially expressed genes excluding the no/low count genes   #520
+plotMA(P1_con_S, main="P1 vs S")
+
+
+P2_con_S <- results(dds, contrast = c("fish_type2", "S", "P2"), alpha = 0.05)
+nrow(P2_con_S[P2_con_S$padj<0.05 & !is.na(P2_con_S$padj),])  # Num significantly differentially expressed genes excluding the no/low count genes   #0
+plotMA(P2_con_S, main="P2 vs S")
+
+
+######-------getting p-vals & p-adjusted from pairwise contrasts
+
+#P1 vs P2   #133
+valP1vsP2=cbind(P1_con_P2$pvalue, P1_con_P2$padj)
+head(valP1vsP2)
+nrow(valP1vsP2)
+colnames(valP1vsP2)=c("pval.P1vsP2", "padj.P1vsP2")
+length(valP1vsP2[,1])
+table(complete.cases(valP1vsP2))
+
+
+#P1 vs S
+valP1vsS=cbind(P1_con_S$pvalue, P1_con_S$padj)
+head(valP1vsS)
+colnames(valP1vsS)=c("pval.P1vsS", "padj.P1vsS")
+length(valP1vsS[,1])
+table(complete.cases(valP1vsS))
+
+#P2 vs S
+valP2vsS=cbind(P2_con_S$pvalue, P2_con_S$padj)
+head(valP2vsS)
+colnames(valP2vsS)=c("pval.P2vsS", "padj.P2vsS")
+length(valP2vsS[,1])
+table(complete.cases(valP2vsS))
+
+######-------------make rlogdata and pvals table
+
+rlog=rlogTransformation(dds, blind=TRUE) 
+rld=assay(rlog)
+head(rld)
+length(rld[,1])
+
+rldpvals=cbind(rld,valP1vsP2, valP1vsS, valP2vsS)
+head(rldpvals)
+dim(rldpvals)
+# [1] 20537    51
+table(complete.cases(rldpvals))
+#FALSE  TRUE 
+# 6372 14165 
+
+#write.csv(rldpvals, "../Data/percula_RLDandPVALS.csv", quote=F)
+```
+
+~~~~~~~~~CODE FROM HERE CHECK~~~~~~~~~~~~~~~~  the 4 sections below should be 1 generating a 
+basic heatmap with up and downregulated genes across 3 fish categories (social positions)
+```{r}
+rldpvals <- read.csv(file="../Data/percula_RLDandPVALS.csv", row.names=1)
+head(rldpvals)
+
+
+p.val=0.05 # FDR cutoff
+conds=rldpvals[rldpvals$padj.P1vsP2<=p.val & !is.na(rldpvals$padj.P1vsP2) & rldpvals$padj.P1vsS<=p.val & !is.na(rldpvals$padj.P1vsS),]
+length(conds[,1])
+#308 pval=0.1 when only P1vsP2
+#251 pval=0.1 when both P1vsP2 & P1vsS
+#109 pval=0.05when both P1vsP2 & P1vsS
+head(conds)
+
+# Remove statistical columns at the end (those starting with "pval" or "padj")
+expr_clean <- conds[, !grepl("^pval|^padj", colnames(conds))]
+
+#remove X from column names
+colnames(expr_clean) <- gsub("^X", "", colnames(expr_clean))
+
+fish_type <- c(rep("S", 15), rep("P1", 15), rep("P2", 15))
+# Reorder columns by fish type
+ordered_indices <- order(fish_type)
+expr_ordered <- expr_clean[, ordered_indices]
+fish_type_ordered <- fish_type[ordered_indices]
+
+# Create annotation dataframe
+annotation_col <- data.frame(FishType = fish_type_ordered)
+rownames(annotation_col) <- colnames(expr_ordered)
+
+# Define annotation colors
+ann_colors <- list(
+  FishType = c(S = "grey", P1 = "magenta2", P2 = "purple3")
+)
+
+col0 <- colorRampPalette(rev(c("chocolate1", "#FEE090", "grey10", "cyan3", "cyan")))(100)
+
+# Plot the heatmap
+pheatmap(as.matrix(expr_clean),  # Exclude the first four columns (gene names and p-values)
+         scale = "row",
+         annotation_col = annotation_col,
+         annotation_colors = ann_colors,
+         cluster_cols = FALSE,         # disables clustering to preserve group order
+         show_colnames = T,
+         show_rownames = FALSE,        # hides gene names
+         fontsize_row = 8,
+         color = col0)
+
+#ggsave("../Figures/Heatmap_P1_vs_P2_vs_S.png", width = 10, height = 8, dpi = 1200)
+```
+
+This heatmap shows the expression of genes that are significantly differentially expressed between the three social positions (P1, P2, and S). The rows represent genes, while the columns represent individuals that belong to the 3 different social positions. The color intensity indicates the level of gene expression, with red indicating higher expression and blue indicating lower expression.
+There seem to be subset of DEGs. To further explore these DEGs and link DEGs with observed phenotypes, I will explore this dataset using WGCNA_script.R, which will allow me to identify modules of co-expressed genes and link these modules to phenotypes.
+
+

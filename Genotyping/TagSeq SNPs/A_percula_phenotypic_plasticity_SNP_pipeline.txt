@@ -1,0 +1,156 @@
+#Pipeline to call SNPs from A. percula TagSeq data:
+#Author: Lili Vizer, adapted from Hannah Aichelman & Sarah Barfield
+#Last Updated: 2023 Aug to map to new reference
+#This pipeline takes TagSeq data and calls SNPs with the purpose of figuring out clutch IDs of pairs 
+
+[lvizer@scc1 SNPs]$ pwd
+/projectnb/dispevol/Lili_Vizer/SNPs
+
+----- MAPPING WITH BOWTIE2
+#Mapping samples with bowtie2 against the percula transcriptome (data available: https://www.frontiersin.org/articles/10.3389/fmars.2018.00284/full#h6)
+#IMPORTANT: bowtie2 uses both the index and the reference transcriptome when mapping, it must be in the same destination folder and MUST have the same base name of all files, otherwise it won`t work
+
+#before we can run the mapping we need to build a bowtie2 reference index file from the reference transcriptome
+#making bowtie2 reference index in nemo_genome folder
+[lvizer@scc1 SNPs]$  
+
+module load bowtie2
+bowtie2-build percula_transcriptomepercula_transcriptome.fasta ./percula_transcriptome
+#this outputs 6 files like: percula_transcriptome.1.bt2 etc
+
+#great, bowtie index file was built
+
+#Test mapping with 1 sample against this bowtie2 index to get a SAM file for downstream SNP calling
+[lvizer@scc1 SNPs]$ bowtie2 --no-unal --score-min L,16,1 --local -L 16 -x /projectnb/dispevol/Lili_Vizer/SNPs/percula_transcriptome -U /projectnb/dispevol/Lili_Vizer/SNP/1-P1_S14_L002_R1_001.trim -S 1-P1_S14_L002_R1_001.trim.test.sam
+
+
+[lvizer@scc-ed2 bowtie_ref_index]$ bowtie2 --no-unal --score-min L,16,1 --local -L 16 -x /projectnb/dispevol/Lili_Vizer/SNPs/percula_transcriptome -U /projectnb/dispevol/Lili_Vizer/SNP/1-P1_S14_L002_R1_001.trim -S 1-P1_S14_L002_R1_001.trim.test.sam
+4035965 reads; of these:
+  4035965 (100.00%) were unpaired; of these:
+    1389351 (34.42%) aligned 0 times
+    1403796 (34.78%) aligned exactly 1 time
+    1242818 (30.79%) aligned >1 times
+65.58% overall alignment rate
+
+
+#great this has worked well!
+
+#Now I can move on to mapping all samples
+#Now re-map all .trim files
+#Download 2bRAD_bowtie2_launch.pl from Misha's github: https://github.com/z0on/2bRAD_denovo/blob/master/2bRAD_bowtie2_launch.pl
+
+module load perl/5.28.1
+[lvizer@scc1 SNPs]$ /projectnb/dispevol/Lili_Vizer/SNPs/2bRAD_bowtie2_launch.pl "\.trim$" /projectnb/dispevol/Lili_Vizer/SNPs/percula_transcriptome > bowtie2_mapping_forsnp
+#issue with perl permission: permission denied
+
+#had to run the following line of code to resolve permission:
+chmod +x /projectnb/dispevol/Lili_Vizer/SNPs/2bRAD_bowtie2_launch.pl
+[lvizer@scc1 SNPs]$ /projectnb/dispevol/Lili_Vizer/SNPs/2bRAD_bowtie2_launch.pl "\.trim$" /projectnb/dispevol/Lili_Vizer/SNPs/percula_transcriptome > bowtie2_mapping_forsnp
+
+#submitting this as 45 paralell jobs with 
+scc6_qsub_launcher.py -N mapping -P dispevol-M lvizer@bu.edu -j y -h_rt 24:00:00 -jobsfile bowtie2_mapping_forsnp
+
+module load bowtie2
+qsub mapping_array.qsub
+
+#check if it has been submitted:
+qstat -u lvizer #yes
+
+#example line in script:
+bowtie2 --no-unal --score-min L,16,1 --local -L 16 -x /projectnb/dispevol/Lili_Vizer/SNPs/percula_transcriptome -U 23-P2_S54_L002_R1_001.trim -S 23-P2_S54_L002_R1_001.trim.bt2.sam
+
+#breakdown =
+#--no-unal = suppress SAM records for unaligned reads
+#--score-min L,16,1 [L = linear --> f(x) = 16 + 1 * x]
+#--local -L 16 = Sets the length of the seed substrings to align during multiseed alignment. 
+#Smaller values make alignment slower but more sensitive
+
+
+----- SAM to BAM files
+
+##now we have .sam files
+#now try making bam files:
+#create file 'sams' that is a list of all sam files
+ls *bt2.sam > sams
+cat sams | wc -l
+#45 - great the number of our samples
+
+# next stage is compressing, sorting and indexing the SAM files, so they become BAM files:
+cat sams | perl -pe 's/(\S+)\.sam/samtools import  percula_transcriptome.fasta $1\.sam $1\.unsorted\.bam && samtools sort -o $1\.sorted\.bam $1\.unsorted\.bam && picard AddOrReplaceReadGroups INPUT=$1\.sorted\.bam OUTPUT=$1\.bam RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=$1 && samtools index $1\.bam/' >sam2bam
+
+#an example line of the script looks like this:
+samtools import percula_transcriptome.fasta 1-P1_S14_L002_R1_001.trim.bt2.sam 1-P1_S14_L002_R1_001.trim.bt2.unsorted.bam && samtools sort -o 1-P1_S14_L002_R1_001.trim.bt2.sorted.bam 1-P1_S14_L002_R1_001.trim.bt2.unsorted.bam && picard AddOrReplaceReadGroups INPUT=1-P1_S14_L002_R1_001.trim.bt2.sorted.bam OUTPUT=1-P1_S14_L002_R1_001.trim.bt2.bam RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=1-P1_S14_L002_R1_001.trim.bt2 && samtools index 1-P1_S14_L002_R1_001.trim.bt2.bam
+
+
+#using the below qsub_launcher.py creates as many jobs as samples you have, here 45. It speeds up the process greatly
+
+scc6_qsub_launcher.py -N sam2bam -P dispevol -M lvizer@bu.edu -j y -h_rt 24:00:00 -jobsfile sam2bam
+load samtools   #samtools must be loaded before we qsub the array
+qsub sam2bam_array.qsub
+qstat -u lvizer #yes the job is running
+
+#once job finishes, remove unnecessary intermediate files
+[lvizer@scc1 SNPs]$ rm -f *sorted*
+
+#create file "bam" that is a list of all bam files
+[lvizer@scc1 SNPs]$ ls *bt2.bam > bams
+[lvizer@scc1 SNPs]$ cat bams | wc -l
+45 #great the number of our samples
+
+
+--------GENOTYPING WITH ANGSD 
+##population structure (based on common polymorphisms)
+
+#to run ANGSD we must have an indexed fai file of the reference transcriptome
+#first need to create a dictionary and an index (.fai) file for the reference 
+
+#Request an interactive node before you start this analysis, might get kicked off for taking up too much memory on the head node
+qrsh -pe omp 12
+
+module load htslib/1.9
+module load samtools/1.9
+module load picard
+[lvizer@scc-mf8 SNPs]$ picard CreateSequenceDictionary R=percula_transcriptome.fasta O=percula_transcriptome.dict
+[lvizer@scc-mf8 SNPs]$ samtools faidx percula_transcriptome.fasta
+
+
+
+# F I L T E R S :
+# (ALWAYS record your filter settings and explore different combinations to confirm that results are robust. )
+# Suggested filters :
+# -minMapQ 20 : only highly unique mappings (prob of erroneous mapping = 1%)
+# -minQ 25 : only highly confident base calls
+#could make this 20 to get more snps
+
+# -minInd 36 : the site must be genotyped in at least 36 individuals (note: set this to ~ 80% of your total number of your individuals, total samples are 45)
+#lower this if you want more snps
+
+
+# -snp_pval 1e-3 : high confidence that the SNP is not just sequencing error 
+# -minMaf 0.05 : only common SNPs, with allele frequency 0.05 or more.
+# Note: the last two filters are very efficient against sequencing errors but introduce bias against true rare alleles. It is OK (and even desirable) - UNLESS we want to do AFS analysis. We will generate data for AFS analysis in the next part.\
+# also adding  filters against very badly non-HWE sites (such as, all calls are heterozygotes => lumped paralog situation) and sites with really bad strand bias:\
+
+
+# T O   D O : \
+# -GL 1 : samtools likelihood model\
+# -doGlf 2 : output beagle format (for admixture)\
+# -doGeno 32 : binary genotype likelihoods format (for ngsCovar => PCA)\
+# -doMajorMinor 4 -ref $GENOME_REF : infer major and minor alleles from reference (using nemo genome)\
+# -makeMatrix 1 -doIBS 1 -doCov 1 : identity-by-state and covariance matrices based on single-read resampling (robust to variation in coverage across samples)\
+# TO-DO commands can be changed to generate different files needed for different analyses as well (http://www.popgen.dk/angsd/index.php/ANGSD#Overview) 
+#skipTrialellic 1 #could add this if you want to remove triallelic snps, usually a sequencing error
+
+
+#the filters I used for angsd:
+[lvizer@scc-mf8 SNPs]$ FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -skipTriallelic 1 -minInd 36 -snp_pval 1e-5 -minMaf 0.05"
+[lvizer@scc-mf8 SNPs]$ TODO="-doMajorMinor 1 -ref /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa -doMaf 1 -doCounts 1 -makeMatrix 1 -doIBS 1 -doBcf -1 -doCov 1 -doGeno 8 -doPost 1 -doGlf 2"
+[lvizer@scc-mf8 SNPs]$ module load angsd
+[lvizer@scc-mf8 SNPs]$ angsd -b bams -GL 1 $FILTERS $TODO -P 1 -out angsd_out 
+
+#once ANGSD ran, we can exit active node mode
+exit
+
+# scp *Mat, *qopt and bams files to laptop
+
+# Next we will use angsd_ibs_pca.R to plot PCA move to home laptops and work in R for visualizations. 

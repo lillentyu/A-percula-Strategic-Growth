@@ -1,0 +1,453 @@
+#Phenotypic Plasticity A. percula
+
+
+#Moving all samples from Illumina basespace to SCC (also saved as a separate script):
+# load basespace
+module load basespace-cli
+
+# authenticate
+bs auth
+
+# list available projects (and find project ID)
+bs list projects 
+
+# download the project files (ID: 392527533) to current working directory (.) 
+-- I am working in /projectnb/dispevol/Lili_Vizer/raw_seqs/a_percula_seqs
+bs download project -i 392527533 -o .
+
+# copy all files into a .gz format
+mv **/*.gz .
+
+# move all *.gz files into 'raw_fastq_files' directory
+mv *.gz raw_fastq_files
+
+# and move raw download files to 'mv SA* raw_files/' directory
+mv SA* raw_files/
+
+# copy .gz files into 'raw_zip_files' directory before unzipping (want to save the originals)
+cp /projectnb/dispevol/Lili_Vizer/raw_seqs/a_percula_seqs/raw_fastq_files/*.gz  /projectnb/dispevol/Lili_Vizer/nemo_genome/percula_fastq_files
+
+# unzip all files (I didn't submit as a job here)
+gunzip *.gz
+
+# just for sanity check, make sure a file looks correct:
+head -50  1-P1_S14_L002_R1_001.fastq # looks good!
+# note that every read has four lines, the ID line starts with @A00842
+
+# check the number of files
+ls | grep 001.fastq | wc -l
+#total files are 45 which is great (the number it should be)
+
+#-------------------
+
+### Adaptor and quality trimming:
+
+# load fastx_toolkit
+module load fastx-toolkit/0.0.14
+module load perl/5.28.1
+
+# creating and launching the cleaning process for all files in the same time (job called 'clean')
+
+for file in *.fastq
+do echo "perl tagseq_clipper.pl ${file} | fastx_clipper -a AAAAAAAA -l 20 | fastx_clipper -a AGATCGGAAG -l 20 | fastq_quality_filter -q 20 -p 90 -Q33 >${file/.fastq/}.trim" >>clean
+done
+
+
+
+#-------------
+#	$ fastx_clipper -h
+#	usage: fastx_clipper [-h] [-a ADAPTER] [-D] [-l N] [-n] [-d N] [-c] [-C] [-o] [-v] [-z] [-i INFILE] [-o OUTFILE]
+#
+#	version 0.0.6
+#	   [-a ADAPTER] = ADAPTER string. default is CCTTAAGG (dummy adapter).
+#	   [-l N]       = discard sequences shorter than N nucleotides. default is 5.
+#	   [-d N]       = Keep the adapter and N bases after it.
+#	   [-c]         = Discard non-clipped sequences (i.e. - keep only sequences which contained the adapter).
+#	   [-C]         = Discard clipped sequences (i.e. - keep only sequences which did not contained the adapter).
+#	   [-k]         = Report Adapter-Only sequences.
+#			  (using '-d 0' is the same as not using '-d' at all. which is the default).
+#	   [-n]         = keep sequences with unknown (N) nucleotides. default is to discard such sequences.
+#	   [-v]         = Verbose - report number of sequences.
+#			  If [-o] is specified,  report will be printed to STDOUT.
+#			  If [-o] is not specified (and output goes to STDOUT),
+#			  report will be printed to STDERR.
+#	   [-z]         = Compress output with GZIP.
+#	   [-D]		= DEBUG output.
+#	   [-i INFILE]  = FASTA/Q input file. default is STDIN.
+#	   [-h]         = This helpful help screen.
+#	   [-o OUTFILE] = FASTA/Q output file. default is STDOUT.
+
+#------
+
+#$ fastq_quality_filter -h
+#	usage: fastq_quality_filter [-h] [-v] [-q N] [-p N] [-z] [-i INFILE] [-o OUTFILE]
+#
+#	version 0.0.6
+#	   [-h]         = This helpful help screen.
+#	   [-q N]       = Minimum quality score to keep.
+#	   [-p N]       = Minimum percent of bases that must have [-q] quality.
+#	   [-z]         = Compress output with GZIP.
+#	   [-i INFILE]  = FASTA/Q input file. default is STDIN.
+#	   [-o OUTFILE] = FASTA/Q output file. default is STDOUT.
+#	   [-v]         = Verbose - report number of sequences.
+#			  If [-o] is specified,  report will be printed to STDOUT.
+#			  If [-o] is not specified (and output goes to STDOUT),
+#			  report will be printed to STDERR.
+
+#-------------
+
+# add the bash heading and run as shell script
+# ---
+nano clean
+#!/bin/bash -l
+
+# Give job a name
+#$ -N clean_hyp
+
+# Combine output and error files into a single file
+#$ -j y
+# ---
+
+#save as clean.sh
+
+# submit job
+qsub clean.sh
+
+# check the status of my jobs running
+qstat -u lvizer
+
+
+# ------------
+### What the cleaning/trimming does:
+
+## tagseq_clipper.pl:
+# "Clips 5'-leader off Illumina fastq reads in RNA-seq
+# Removes duplicated reads sharing the same degenerate header and
+# the first 20 bases of the sequence (reads containing N bases in this
+# region are discarded, too)"
+
+## fastx_clipper:
+# [-a ADAPTER] = ADAPTER string. default is CCTTAAGG (dummy adapter). ----> I use AAAAAAAA and AGATCGGAAG with
+# [-l N]       = discard sequences shorter than N nucleotides. default is 5. ----> I used 20 for both adapters
+
+## fastq_quality_filter:    fastq_quality_filter -q 20 -p 90 -Q33
+# [-q N]       = Minimum quality score to keep. ----> I used 20 nucleotides
+# [-p N]       = Minimum percent of bases that must have [-q] quality. ----> I used 90 % here
+# ------------
+
+#Using fastQC software to look for adapters, the following adapters found:
+•	Illumina Universal Adapter—AGATCGGAAGAG = what we cut in the above script
+•	Illumina Small RNA 3' Adapter—TGGAATTCTCGG
+•	Illumina Small RNA 5' Adapter—GATCGTCGGACT
+•	Nextera Transposase Sequence—CTGTCTCTTATA
+
+#do I worry about the rest?
+
+#we now have .trim files which we`ll be moving into it`s separate folder called trimmed_fastq_files
+mkdir trimmed_fastq_files
+#this folder is located:/projectnb/dispevol/Lili_Vizer/nemo_genome/percula_fastq_files/trimmed_fastq_files
+
+
+#Can move on to getting set up for mapping
+------ 
+
+#Getting A. percula genome and annotation from ENSEMBL:
+#nemo genome: https://ftp.ensembl.org/pub/release-109/fasta/amphiprion_percula/dna/ 
+##we only need to soft masked top-level file (masked file is needed to avoid haplotipe issues down the line: the file: 	Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa.gz)
+#annotation file: https://ftp.ensembl.org/pub/release-109/gtf/amphiprion_percula/
+##from annotation folder we only need the .gtf file
+
+#Copy directly from ENSEMBL the annotation file:
+wget ftp.ensembl.org/pub/release-109/fasta/amphiprion_percula/dna/Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa.gz  /projectnb/dispevol/Lili_Vizer/nemo_genome 
+#Copy directly from ENSEMBL the annotation file: (works well since it`s one file, large genomes will take long time tho)
+wget ftp.ensembl.org/pub/release-109/gtf/amphiprion_percula/Amphiprion_percula.Nemo_v1.109.gtf.gz /projectnb/dispevol/Lili_Vizer/nemo_genome 
+
+#Need to decompress the .fa.gz and .gtf.gz files to create genome index with STAR:
+[lvizer@scc1 nemo_genome]$ gunzip Amphiprion_percula.Nemo_v1.109.gtf.gz
+[lvizer@scc1 nemo_genome]$ gunzip Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa.gz
+#generate list of files available to make sure it happened:
+[lvizer@scc1 nemo_genome]$ ls -l 
+
+
+##GREAT they have been decompressed.
+## Make a STAR index with annotation files
+
+# Make a shell script to run:
+
+nano STAR_GenomeIndexCreate.sh
+
+
+
+# ---
+#!#/bin/bash
+#$ -j y
+
+echo "Please put in the base directory:"
+read base
+echo "Please put in the output folder name:"
+read output
+
+echo "Outputs saving to : " $base$output
+
+if [ -d "$base$output" ]; then
+	echo "Directory Already Exists, please rerun with unique output directory"
+	exit 1
+else
+	echo "Directory Created"
+	mkdir "$base$output"
+fi
+
+echo "Select genome file (.fna format, should include entire path)"
+read genome
+
+echo "Select gene annotation file (.gtf, should includ entire path)"
+read gene_annotation
+
+STAR --runThreadN 32 \
+--runMode genomeGenerate \
+--genomeDir $base$output \
+--genomeFastaFiles $genome \
+--sjdbGTFfile $gene_annotation \
+--genomeSAindexNbases 13
+
+# ---
+
+#making sure it is correct, we look at it with cat
+cat STAR_GenomeIndexCreate.sh
+
+#looks good! we can try running it:
+
+
+# load the STAR module
+module load star/2.7.9a
+
+# run the STAR script
+source STAR_genomeCreate.sh
+
+#---
+#Initially ran it without "--genomeSAindexNbases 13" line, and got the following error message:
+# !!!!! WARNING: --genomeSAindexNbases 14 is too large for the genome size=684741128, 
+which may cause seg-fault at the mapping step. Re-run genome generation with recommended --genomeSAindexNbases 13
+# ... so deleted previous run and reran the script (same as Colleen`s script)
+
+
+### Input requests from running the above script
+# Please put in the base directory:
+# /projectnb/dispevol/Lili_Vizer/nemo_genome/
+# 
+# Please put in the output folder name:
+# STAR_ref_index
+# 
+# Outputs saving to :  
+# Directory Created
+# 
+# Select genome file (.fna format, should include entire path)
+# /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa
+# 
+# Select gene annotation file (.gtf, should includ entire path)
+# /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.109.gtf
+
+[lvizer@scc1 nemo_genome]$ module load star/2.7.9a
+[lvizer@scc1 nemo_genome]$ source STAR_GenomeIndexCreate.sh
+Please put in the base directory:
+/projectnb/dispevol/Lili_Vizer/nemo_genome/
+Please put in the output folder name:
+STAR_ref_index
+Outputs saving to :  /projectnb/dispevol/Lili_Vizer/nemo_genome/STAR_ref_index
+Directory Created
+Select genome file (.fna format, should include entire path)
+/projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa
+Select gene annotation file (.gtf, should includ entire path)
+/projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.109.gtf
+        STAR --runThreadN 32 --runMode genomeGenerate --genomeDir /projectnb/dispevol/Lili_Vizer/nemo_genome/STAR_ref_index --genomeFastaFiles /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.dna_sm.toplevel.fa --sjdbGTFfile /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.109.gtf --genomeSAindexNbases 13
+        STAR version: 2.7.9a   compiled: 2021-07-19T14:08:30-0400 scc-bc1:/share/pkg.7/star/2.7.9a/src/STAR-2.7.9a/source
+Jul 20 09:58:18 ..... started STAR run
+Jul 20 09:58:18 ... starting to generate Genome files
+Jul 20 09:58:32 ..... processing annotations GTF
+Jul 20 09:58:40 ... starting to sort Suffix Array. This may take a long time...
+Jul 20 09:58:44 ... sorting Suffix Array chunks and saving them to disk...
+Jul 20 10:00:50 ... loading chunks from disk, packing SA...
+Jul 20 10:01:12 ... finished generating suffix array
+Jul 20 10:01:12 ... generating Suffix Array index
+Jul 20 10:02:20 ... completed Suffix Array index
+Jul 20 10:02:20 ..... inserting junctions into the genome indices
+Jul 20 10:03:37 ... writing Genome to disk ...
+Jul 20 10:03:38 ... writing Suffix Array to disk ...
+Jul 20 10:03:52 ... writing SAindex to disk
+Jul 20 10:03:53 ..... finished successfully
+
+# Let`s look at the Log.out file - should have no error messages
+# Looks good, no warning messages!
+
+--- 
+# Can move to Mapping
+
+## Making a new directory within for the output: "mapped_files"
+# /projectnb/dispevol/Lili_Vizer/mapped_files
+mkdir mapped_files
+
+
+## STAR Mapping Test
+# Going to test the commands to make sure they work with the following sample:7-S_S28_L002_R1_001.fastq
+
+
+#----
+#ran this without submitting a job
+
+module load star
+ $RUN STAR --genomeDir /projectnb/dispevol/Lili_Vizer/nemo_genome/STAR_ref_index       
+           --readFilesIn 7-S_S28_L002_R1_001.trim       
+           --outSAMtype BAM SortedByCoordinate       
+           --quantMode GeneCounts       
+           --outFileNamePrefix mapped_STAR_files/7-S       
+           --runThreadN 4   
+#----
+
+#great this worked!
+
+#writing the previous as a job and modifying the for all samples
+
+
+nano STAR_mapping.sh
+
+#----
+#!/bin/bash -l
+
+module load star 
+
+for fastq in /projectnb/dispevol/Lili_Vizer/nemo_genome/percula_fastq_files/trimmed_fastq_files/*trim
+do echo $fastq
+$RUN STAR --genomeDir /projectnb/dispevol/Lili_Vizer/nemo_genome/STAR_ref_index \
+      --readFilesIn $fastq \
+      --outSAMtype BAM SortedByCoordinate \
+      --quantMode GeneCounts \
+      --outSAMunmapped Within \
+      --outFileNamePrefix mapped_STAR_files/$(basename $fastq trim) \
+
+done
+#----
+
+# submit this job
+qsub nano STAR_mapping.sh
+
+# and see if it runs!
+qstat -u lvizer
+
+# we should also see a number of files per sample name being created within the "mapped_STAR_files" directory
+
+# use this to view mapped read % for each sample
+grep "Uniquely mapped reads %" *Log.final.out
+
+[lvizer@scc1 mapped_STAR_files]$ grep "Uniquely mapped reads %" *Log.final.out
+#1-P1_S14_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.95%
+#1-P2_S15_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.47%
+#1-S_S13_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     86.65%
+#10-P1_S32_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.09%
+#10-P2_S33_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.30%
+#10-S_S31_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.59%
+#11-P1_S35_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   84.76%
+#11-P2_S36_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.04%
+#11-S_S34_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.20%
+#13-P1_S38_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.63%
+#13-P2_S39_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   85.15%
+#13-S_S37_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.10%
+#14-P1_S41_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   85.64%
+#14-P2_S42_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.74%
+#14-S_S40_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.94%
+#15-P1_S44_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   88.40%
+#15-P2_S45_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   85.12%
+#15-S_S43_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.92%
+#2-P1_S17_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.90%
+#2-P2_S18_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.10%
+#2-S_S16_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     85.69%
+#20-P1_S47_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   85.05%
+#20-P2_S48_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.42%
+#20-S_S46_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.58%
+#21-P1_S50_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.05%
+#21-P2_S51_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.39%
+#21-S_S49_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.55%
+#23-P1_S53_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   84.33%
+#23-P2_S54_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   85.57%
+#23-S_S52_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.84%
+#26-P1_S56_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   87.13%
+#26-P2_S57_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |   86.54%
+#26-S_S55_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.64%
+#3-P1_S20_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    84.00%
+#3-P2_S21_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.16%
+#3-S_S19_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     85.36%
+#5-P1_S23_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.87%
+#5-P2_S24_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.04%
+#5-S_S22_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     87.24%
+#6-P1_S26_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.17%
+#6-P2_S27_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    86.14%
+#6-S_S25_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     86.09%
+#7-P1_S29_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    84.92%
+#7-P2_S30_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |    85.65%
+#7-S_S28_L002_R1_001.Log.final.out:                        Uniquely mapped reads % |     85.90%
+
+
+## Going to check that a bam file looks good using samtools:
+module load samtools
+samtools view -h 7-S_S28_L002_R1_001.Aligned.sortedByCoord.out.bam | less
+q #to exit view
+# this looks good so moving forward!
+
+#moving the mapped_STAR_folder into Lili_Vizer directory
+mv /projectnb/dispevol/Lili_Vizer/nemo_genome/percula_fastq_files/trimmed_fastq_files/mapped_STAR_files /projectnb/dispevol/Lili_Vizer/
+
+#------------------------------
+## Generating read-counts-per gene
+# this is a helpful walkthrough: https://github.com/hbctraining/Intro-to-rnaseq-hpc-O2/blob/master/lessons/2day_rnaseq_workflow.md
+
+
+## Need to add featureCounts to SCC:
+# Download tar.gz from here: http://subread.sourceforge.net/
+# move to the SCC 
+scp -r subread-2.0.3-source.tar.gz lvizer@scc1.bu.edu:/projectnb/dispevol/Lili_Vizer/subread-2.0.3
+
+tar -xzf subread-2.0.3-source.tar.gz
+cd subread-2.0.3-source/src
+make -f Makefile.Linux
+
+# It works, now this is the path needed for featureCounts:
+/projectnb/dispevol/Lili_Vizer/subread-2.0.3/subread-2.0.3-source/bin
+
+# by running the following code, we are now able to run featureCounts from outside this directory
+export PATH=/projectnb/dispevol/Lili_Vizer/subread-2.0.3/subread-2.0.3-source/bin:$PATH
+
+
+## Move all .bam files from 'mapped_STAR_files' to 'bam_files'
+mv mapped_files/*.bam bam_files
+cd bam_files
+
+## Now that we have featureCounts sorted, lets give it a try with a single sample
+# need to remove the emptyp gene_id from the Amphiprion_percula.Nemo_v1.109.gtf file for the following to run : Amphiprion_percula.Nemo_v1.109_UPDATED.gtf
+grep "gene_id """ Amphiprion_percula.Nemo_v1.109.gtf 
+grep -v "gene_id """ Amphiprion_percula.Nemo_v1.109.gtf > Amphiprion_percula.Nemo_v1.109_UPDATED.gtf
+
+
+# make a new 'count_files' folder 
+mkdir count_files
+
+featureCounts -T 6 -s 1 \
+  -a /projectnb/dispevol/Lili_Vizer/nemo_genome/Amphiprion_percula.Nemo_v1.109_UPDATED.gtf \
+  -o /projectnb/dispevol/Lili_Vizer/mapped_STAR_files/count_files2/nemo_featurecounts.txt \
+  /projectnb/dispevol/Lili_Vizer/mapped_STAR_files/bam_files/*bam
+
+# Now check that it looks okay (the first few columns will look a bit funky, but we will remove them!)
+less /projectnb/dispevol/Lili_Vizer/mapped_STAR_files/count_files/nemo_featurecounts_.txt
+
+
+## Done! Just tidying up the
+#before I did this, I have removed unnecessary bits of file names to simple: sample.Aligned.sortedByCoord.out.bam 
+# shorten the column name to sample name only
+sed "s/.Aligned.sortedByCoord.out.bam//g" nemo_featurecounts_.txt>nemo_featurecounts2_.txt
+sed "s:/projectnb/dispevol/Lili_Vizer/mapped_STAR_files/bam_files/::g" nemo_featurecounts2_.txt>nemo_featurecounts_24July2023_.txt
+
+# remove the first line (it is not necessary)
+sed -i "1d" nemo_featurecounts_24July2023_.txt
+
+
+#------------------------------
+## All done! 
+#SAVE nemo_featurecounts_24July2023_.txt to own computer
